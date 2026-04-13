@@ -1,274 +1,181 @@
-Description: Template to create VPC and EC2 resources for load test
-
-Metadata:
-  AWS::CloudFormation::Interface:
-    ParameterGroups:
-      -
-        Label:
-          default: "Network Configuration"
-        Parameters:
-          - VPCName
-          - CIDRVpc
-          - CIDRPublicA
-          - CIDRPublicB
-      -
-        Label:
-            default: "Locust Configuration"
-        Parameters:
-            - TargetEndpoint
-            - Slaves
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Load Testing Environment using Locust (Compatible with ALB App)
 
 Parameters:
-  VPCName:
-    Type: String
-    Default: VPC-Locust
-    Description: 'VPC name. Default: VPC-Locust'
-  CIDRVpc:
-    Type: String
-    Default: 10.100.0.0/16
-    Description: VPC CIDR
-    AllowedPattern: '(\d{1,3})[.](\d{1,3})[.](\d{1,3})[.](\d{1,3})[/](\d{1,2})'
-    ConstraintDescription: Must be a CIDR range a.b.c.d/x.
-  CIDRPublicA:
-    Type: String
-    Default: 10.100.11.0/24
-    Description: VPC CIDR Subnet Public-A
-    AllowedPattern: '(\d{1,3})[.](\d{1,3})[.](\d{1,3})[.](\d{1,3})[/](\d{1,2})'
-    ConstraintDescription: Must be a CIDR range a.b.c.d/x.
-  CIDRPublicB:
-    Type: String
-    Default: 10.100.21.0/24
-    Description: VPC CIDR Subnet Public-B
-    AllowedPattern: '(\d{1,3})[.](\d{1,3})[.](\d{1,3})[.](\d{1,3})[/](\d{1,2})'
-    ConstraintDescription: Must be a CIDR range a.b.c.d/x.
   TargetEndpoint:
     Type: String
-    Description: Endpoint of target host
-    Default: https://www.yourwebsite.com
+    Description: ALB DNS from main stack
+    Default: http://example-alb-dns.amazonaws.com
+
   Slaves:
     Type: Number
-    Default: 10
-    Description: 'Quantity of slaves'
+    Default: 5
 
 Mappings:
-  RegionAndResource:
+  RegionMap:
     us-east-1:
-      image: ami-0b898040803850657
+      AMI: ami-00dc79254d0461090
 
 Resources:
+
+# ---------------- VPC ---------------- #
   VPC:
-    Type: 'AWS::EC2::VPC'
+    Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Ref CIDRVpc
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: !Ref VPCName
+      CidrBlock: 10.100.0.0/16
+
   IGW:
-    Type: 'AWS::EC2::InternetGateway'
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Join
-            - ''
-            - - IGW-
-              - !Ref VPCName
-        - Key: VPC
-          Value: !Ref VPCName
-  IGWAttach:
-    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref IGW
-  RouteTablePubA:
-    Type: 'AWS::EC2::RouteTable'
+
+# ---------------- SUBNETS ---------------- #
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: Route-Table-Public-A
-        - Key: VPC
-          Value: !Ref VPCName
-  RouteIGWA:
-    Type: 'AWS::EC2::Route'
-    DependsOn: IGW
+      CidrBlock: 10.100.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
     Properties:
-      RouteTableId: !Ref RouteTablePubA
+      VpcId: !Ref VPC
+      CidrBlock: 10.100.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+# ---------------- ROUTING ---------------- #
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachIGW
+    Properties:
+      RouteTableId: !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref IGW
-  RouteTablePubB:
-    Type: 'AWS::EC2::RouteTable'
+
+  AssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTable
+
+  AssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref RouteTable
+
+# ---------------- SECURITY ---------------- #
+  LocustSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Locust SG
       VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: Route-Table-Public-B
-        - Key: VPC
-          Value: !Ref VPCName
-  RouteIGWB:
-    Type: 'AWS::EC2::Route'
-    DependsOn: IGW
-    Properties:
-      RouteTableId: !Ref RouteTablePubB
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref IGW
-  SubnetPubA:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref CIDRPublicA
-      AvailabilityZone: !Select
-        - '0'
-        - !GetAZs ''
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: PubSubnet-A
-        - Key: VPC
-          Value: !Ref VPCName
-  RouteTableAssociationPubA:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
-    Properties:
-      SubnetId: !Ref SubnetPubA
-      RouteTableId: !Ref RouteTablePubA
-  SubnetPubB:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref CIDRPublicB
-      AvailabilityZone: !Select
-        - '1'
-        - !GetAZs ''
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: PubSubnet-B
-        - Key: VPC
-          Value: !Ref VPCName
-  RouteTableAssociationPubB:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
-    Properties:
-      SubnetId: !Ref SubnetPubB
-      RouteTableId: !Ref RouteTablePubB
-  SecurityGroupHTTPEC2:
-    Type: 'AWS::EC2::SecurityGroup'
-    Properties:
-      GroupName: HTTPSgEC2
-      GroupDescription: HTTP(S)
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: '80'
-          ToPort: '80'
+          FromPort: 80
+          ToPort: 80
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
-          FromPort: '443'
-          ToPort: '443'
+          FromPort: 5557
+          ToPort: 5557
           CidrIp: 0.0.0.0/0
-        - IpProtocol: -1
-          CidrIp: !Ref CIDRVpc
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: HTTPSgEC2
-  EC2Master:
-    Type: 'AWS::EC2::Instance'
-    Properties:
-      ImageId: !FindInMap
-        - RegionAndResource
-        - !Ref 'AWS::Region'
-        - image
-      InstanceType: c5.large
-      SubnetId: !Ref SubnetPubA
-      SecurityGroupIds:
-        - !Ref SecurityGroupHTTPEC2
-      UserData:
-        Fn::Base64:
-            !Sub |
-                #!/bin/bash -xe
-                sudo su
-                yum update -y
-                yum -y groupinstall 'Development Tools'
-                curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-                python get-pip.py
-                pip install virtualenv
-                virtualenv locustenv
-                source locustenv/bin/activate
-                pip install locustio==0.13.5
-                cat >locustfile.py <<EOL
-                from locust import HttpLocust, TaskSet
-                def index(l):
-                    l.client.get("/")
-                class UserBehavior(TaskSet):
-                    tasks = {index: 2}
-                class WebsiteUser(HttpLocust):
-                    task_set = UserBehavior
-                    min_wait = 5000
-                    max_wait = 9000
-                EOL
-                locust --master --host=${TargetEndpoint} --web-port 80
-      Tags:
-        - Key: Name
-          Value: locust-master
+        - IpProtocol: tcp
+          FromPort: 5558
+          ToPort: 5558
+          CidrIp: 0.0.0.0/0
 
-  EC2Slaves:
-    Type: AWS::AutoScaling::LaunchConfiguration
-    Properties:
-      ImageId: !FindInMap
-        - RegionAndResource
-        - !Ref 'AWS::Region'
-        - image
-      InstanceType: t3.micro
-      LaunchConfigurationName: LocustSlavesConfiguration
-      SecurityGroups:
-        - !Ref SecurityGroupHTTPEC2
-      UserData:
-        Fn::Base64:
-            !Sub |
-                #!/bin/bash -xe
-                sudo su
-                yum update -y
-                yum -y groupinstall 'Development Tools'
-                curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-                python get-pip.py
-                pip install virtualenv
-                virtualenv locustenv
-                source locustenv/bin/activate
-                pip install locustio==0.13.5
-                cat >locustfile.py <<EOL
-                from locust import HttpLocust, TaskSet
-                def index(l):
-                    l.client.get("/")
-                class UserBehavior(TaskSet):
-                    tasks = {index: 2}
-                class WebsiteUser(HttpLocust):
-                    task_set = UserBehavior
-                    min_wait = 5000
-                    max_wait = 9000
-                EOL
-                locust --slave --host=${TargetEndpoint} --master-host=${EC2Master.PublicDnsName}
-
-  SlaveAutoScaling:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn: EC2Slaves
-    Properties:
-      AutoScalingGroupName: LocustSlaves
-      DesiredCapacity: !Ref Slaves
-      MaxSize: !Ref Slaves
-      MinSize: !Ref Slaves
-      LaunchConfigurationName: !Ref EC2Slaves
-      Tags:
-        - Key: Name
-          Value: locust-slave
-          PropagateAtLaunch: 'true'
-      VPCZoneIdentifier:
-        - !Ref SubnetPubA
-        - !Ref SubnetPubB
-
-Outputs:
-  VPC:
-    Description: VPC id
-    Value: !Ref VPC
+# ---------------- LOCUST MASTER ---------------- #
   LocustMaster:
-    Description: Locust master instance
-    Value: !GetAtt EC2Master.PublicDnsName
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref AWS::Region, AMI]
+      InstanceType: t3.medium
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref LocustSG
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install python3 git -y
+
+          pip3 install locust
+
+          cat > locustfile.py <<EOF
+          from locust import HttpUser, task, between
+
+          class WebsiteUser(HttpUser):
+              wait_time = between(1, 3)
+
+              @task
+              def load_home(self):
+                  self.client.get("/")
+          EOF
+
+          nohup locust -f locustfile.py \
+          --master \
+          --host=${TargetEndpoint} \
+          --web-port 80 &
+
+# ---------------- LOCUST SLAVES ---------------- #
+  LocustLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !FindInMap [RegionMap, !Ref AWS::Region, AMI]
+        InstanceType: t3.micro
+        SecurityGroupIds:
+          - !Ref LocustSG
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install python3 -y
+
+            pip3 install locust
+
+            cat > locustfile.py <<EOF
+            from locust import HttpUser, task, between
+
+            class WebsiteUser(HttpUser):
+                wait_time = between(1, 3)
+
+                @task
+                def load_home(self):
+                    self.client.get("/")
+            EOF
+
+            nohup locust -f locustfile.py \
+            --worker \
+            --master-host=${LocustMaster.PrivateIp} &
+
+  LocustASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      MinSize: 1
+      MaxSize: !Ref Slaves
+      DesiredCapacity: !Ref Slaves
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LocustLaunchTemplate
+        Version: !GetAtt LocustLaunchTemplate.LatestVersionNumber
+
+# ---------------- OUTPUT ---------------- #
+Outputs:
+  LocustURL:
+    Description: Access Locust UI
+    Value: !Sub "http://${LocustMaster.PublicDnsName}"
